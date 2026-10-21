@@ -23,6 +23,31 @@ static void pg_mod_test_recheck(void);
 #include <os/proc.h>
 #include <mach/mach.h>
 #include "NativeMemoryBudget.h"
+#if TARGET_OS_MACCATALYST
+#include <sys/sysctl.h>
+#endif
+
+// The memory the app may still use before the system stops it (iOS's Jetsam limit). macOS has no such
+// limit, so the Mac app gives itself one, by default 60% of the Mac's memory (PG_STREAM_MEMORY_LIMIT_MB
+// overrides), and every budget built on the iPhone limit works the same there (GTA-9).
+uint64_t PGProcessAvailableMemory(void) {
+#if TARGET_OS_MACCATALYST
+  static uint64_t limit;
+  if (!limit) {
+    const char *configured = getenv("PG_STREAM_MEMORY_LIMIT_MB");
+    long mb = configured ? atol(configured) : 0;
+    uint64_t ram = 0; size_t size = sizeof ram;
+    sysctlbyname("hw.memsize", &ram, &size, NULL, 0);
+    limit = mb >= 2048 ? (uint64_t)mb << 20 : ram / 10 * 6;
+    if (limit < (4096ull << 20)) limit = 4096ull << 20;
+  }
+  task_vm_info_data_t info = {}; mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) return 0;
+  return limit > info.phys_footprint ? limit - info.phys_footprint : 0;
+#else
+  return os_proc_available_memory();
+#endif
+}
 
 static struct w2c_env env;
 static struct w2c_wasi__snapshot__preview1 wasi = { .env = &env };
@@ -151,6 +176,7 @@ const char *pg_string(struct w2c_env *host, uint64_t address) {
 wasm_rt_shared_memory_t *w2c_env_memory(struct w2c_env *host) { return &env.memory; }
 // The engine's memory for host code that reads its tables (NativeStreamingHealth.c).
 const uint8_t *pg_engine_memory(uint64_t *size) { *size = env.memory.size; return env.memory.data; }
+uint64_t pg_engine_memory_capacity(void) { return env.memory.max_pages * env.memory.page_size; }
 static double timeMS(clockid_t clock) {
   struct timespec time;
   clock_gettime(clock, &time);
@@ -288,7 +314,7 @@ static bool nativeProcessHeadroom(uint64_t *headroom){
  uint64_t footprint=info.phys_footprint+PGGPUTextureBytes();
  available=simulatedProcessLimit>footprint?simulatedProcessLimit-footprint:0;
 #else
- available=os_proc_available_memory();
+ available=PGProcessAvailableMemory();
  available=available>capReserveBytes?available-capReserveBytes:0;
 #endif
  uint64_t engine=engineAddressHeadroom();
@@ -413,7 +439,7 @@ static uint64_t pg_engine_memory_mb(void){
 #if !TARGET_OS_SIMULATOR
  task_vm_info_data_t info={};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
  if(task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&info,&count)==KERN_SUCCESS){
-  uint64_t limitMB=(os_proc_available_memory()+info.phys_footprint)>>20;
+  uint64_t limitMB=(PGProcessAvailableMemory()+info.phys_footprint)>>20;
   if(memoryCapMB&&memoryCapMB<limitMB){
    capReserveBytes=(limitMB-memoryCapMB)<<20; // headroom the guard leaves unused
    char line[96];snprintf(line,sizeof line,"Memory cap: %llu MB of the %llu MB limit.",(unsigned long long)memoryCapMB,(unsigned long long)limitMB);pg_log(line);
@@ -717,6 +743,7 @@ PGControlHints PGReadControlHints(uint32_t touchContext){
  }
  hints.canDetonate=pg_can_detonate(m,size,ped);
  hints.trailerAttached=atomic_load(&pg_trailer_attached);
+ hints.selfRadioPlaying=PGSelfRadioAudible();
  uint64_t pedInfo;
  if(pg_context_u64(m,size,ped+32,&pedInfo)&&pedInfo)pg_context_u32(m,size,pedInfo+24,&hints.pedModel);
  // Help messages (CMessages, 3 slots of 600 bytes; "is help showing" is the first byte).
@@ -860,6 +887,16 @@ void PGMouseInput(int32_t dx, int32_t dy, int32_t buttons) {
   if (dy) atomic_fetch_add(words + 3, dy);
   atomic_store(words + 5, buttons);
 }
+// The game's own mouse cursor (pause menus, the map) as a fraction of the screen, 0...1.
+bool PGMousePosition(float *x, float *y) {
+  _Atomic uint8_t *keys = pg_input_keys();
+  if (!keys) return false;
+  _Atomic int32_t *words = (_Atomic int32_t *)((uint8_t *)(void *)keys + 256);
+  int32_t width = atomic_load(words + 44), height = atomic_load(words + 45);
+  if (width < 320 || height < 180) { width = 960; height = 540; }
+  *x = (float)atomic_load(words) / (float)width; *y = (float)atomic_load(words + 1) / (float)height;
+  return true;
+}
 void PGMouseWheel(int32_t notches) {
   _Atomic uint8_t *keys = pg_input_keys();
   if (keys && notches) atomic_fetch_add((_Atomic int32_t *)((uint8_t *)(void *)keys + 256) + 4, notches);
@@ -994,6 +1031,18 @@ static void pg_apply_targeting_mode(w2c_game *instance) {
   uint64_t listeners = *(uint64_t *)pg_pointer(&env, 19571440, 8);
   if (listeners) PG_FN_PROFILE_SETTINGS_SET(instance, listeners, 0, (u32)mode);
   char line[96]; snprintf(line, sizeof line, "Targeting mode set to %d.", mode); pg_log(line);
+}
+// Self Radio's play order (GTA-5, Settings › Self Radio): the pause menu's Self Radio Mode, menu preference 168
+// (19566784: 0 like a radio station, 1 in order, 2 shuffle) and profile setting 316, set the same way.
+static _Atomic int32_t pendingSelfRadioMode = -1;
+void PGSetSelfRadioMode(int32_t mode) { if (mode >= 0 && mode <= 2) atomic_store(&pendingSelfRadioMode, mode); }
+static void pg_apply_self_radio_mode(w2c_game *instance) {
+  int32_t mode = atomic_exchange(&pendingSelfRadioMode, -1);
+  if (mode < 0) return;
+  PG_FN_SET_MENU_PREFERENCE(instance, 168, (u32)mode);
+  uint64_t listeners = *(uint64_t *)pg_pointer(&env, 19571440, 8);
+  if (listeners) PG_FN_PROFILE_SETTINGS_SET(instance, listeners, 316, (u32)mode);
+  char line[96]; snprintf(line, sizeof line, "Self Radio: play order %s.", mode == 0 ? "like a radio station" : mode == 1 ? "in order" : "shuffle"); pg_log(line);
 }
 u64 PG_FN_OPERATOR_NEW(w2c_game*, u64); // operator new
 // Used outside the simulator tests below too (the weapon streaming guard, the saved-cash restore).
@@ -1683,6 +1732,76 @@ static void pg_next_aircraft_weapon(w2c_game *instance) {
   snprintf(line, sizeof line, "Aircraft weapon: no other weapon on this aircraft (current 0x%x%s).", current, found ? "" : ", none");
   pg_log(line);
 }
+// Add-on cars whose texture parent isn't in this game version (GTA-151; Scripts/prepare_txd_parent.py). A pack's
+// vehicles.meta can name a parent texture set from a later PC update (cbr1000rrr: "vehicles_race_generic"); the game makes
+// an empty slot for it, the car's textures depend on that slot, and the spawn waited 30 s and failed. The texture store
+// asks here for a slot's parent whenever something requests it: a parent that by then has no file in the game's archives
+// becomes vehshare, the shared vehicle textures, in the slot as well, so the textures link to it when they're placed.
+u32 PG_FN_STREAM_IN_IMAGE(w2c_game*, u32);
+u32 PG_FN_TXD_FIND_SLOT(w2c_game*, u64, u64);
+u64 PG_FN_STREAM_OBJECT_NAME(w2c_game*, u32);
+u32 pg_txd_parent(w2c_game *instance, u64 store, u64 def, u32 child, u32 parent) {
+  if (parent == (u32)-1 || !def || def + 20 > env.memory.size) return parent;
+  const u32 first = *(u32 *)pg_pointer(&env, store + 8, 4);		// the store's first streaming index
+  if (PG_FN_STREAM_IN_IMAGE(instance, first + parent)) return parent;
+  static int32_t vehshare = -2;
+  if (vehshare == -2) {		// its slot, looked up by name once; the name goes on this thread's engine stack
+    const u64 stack = instance->w2c_g0;
+    instance->w2c_g0 -= 16;
+    memcpy(pg_pointer(&env, instance->w2c_g0, 9), "vehshare", 9);
+    vehshare = (int32_t)PG_FN_TXD_FIND_SLOT(instance, store, instance->w2c_g0);
+    instance->w2c_g0 = stack;
+  }
+  if (vehshare < 0 || (u32)vehshare == child || (u32)vehshare == parent) return parent;
+  static u32 logged[32]; static int count;
+  bool seen = false;
+  for (int i = 0; i < count; i++) seen |= logged[i] == parent;
+  if (!seen && count < 32) {
+    logged[count++] = parent;
+    const u64 name = PG_FN_STREAM_OBJECT_NAME(instance, first + parent);		// "<<vehicles_race_generic>>" for an empty slot
+    char line[220];
+    snprintf(line, sizeof line, "Mods: the texture set %s isn't in this game version (it came with a later PC update); add-on cars that build on it use vehshare instead.",
+             name ? pg_string(&env, name) : "?");
+    pg_log(line);
+  }
+  *(u32 *)pg_pointer(&env, def + 16, 4) = (u32)vehshare;
+  return (u32)vehshare;
+}
+// Trace (PG_TRACE_REQUEST_INDEX=N, GTA-151; Scripts/prepare_request_trace.py): which exit of RequestObject answers for
+// streaming object N. It found the add-on car's texture dictionary refused at exit 6, a dependency that isn't in the
+// game's archives (pg_txd_parent above).
+void pg_trace_request_exit(u32 index, u32 exit, u32 result) {
+  static long wanted = -2;
+  if (wanted == -2) { const char *v = getenv("PG_TRACE_REQUEST_INDEX"); wanted = v ? atol(v) : -1; }
+  if (wanted < 0 || index != (u32)wanted) return;
+  char line[120]; snprintf(line, sizeof line, "RequestObject [trace]: object %u leaves by exit %u with %u.", index, exit, result); pg_log(line);
+}
+// Trace (PG_TRACE_STREAM_ALLOC, GTA-151; Scripts/prepare_stream_alloc_trace.py): the streaming allocator's answers
+// for big blocks (big add-on cars need 32 MB pages): every refusal of 1 MB or more and every grant of 8 MB or more, the
+// first 200.
+void pg_trace_stream_alloc(u32 kind, u64 size, u64 align, u32 type, u64 result) {
+  static int on = -1; static _Atomic int logged;
+  if (on < 0) on = getenv("PG_TRACE_STREAM_ALLOC") != NULL;
+  if (!on || size < (result ? 8u << 20 : 1u << 20) || atomic_fetch_add(&logged, 1) >= 200) return;
+  char line[160];
+  snprintf(line, sizeof line, "Streaming allocator [trace]: %s %llu KB (alignment %llu, kind %u): %s.", kind ? "try" : "allocate",
+           (unsigned long long)(size >> 10), (unsigned long long)align, type, result ? "given" : "refused");
+  pg_log(line);
+}
+// Trace (PG_TRACE_STREAM_LOADS, GTA-148): every ~10 s the objects the engine loaded most often, by name.
+int PGStreamTopLoads(uint32_t *index, uint32_t *count, int max);
+u64 PG_FN_STREAM_OBJECT_NAME(w2c_game*, u32);
+static void pg_trace_stream_loads(w2c_game *instance) {
+  static int on = -1; static unsigned frames;
+  if (on < 0) on = getenv("PG_TRACE_STREAM_LOADS") != NULL;
+  if (!on || ++frames % 300) return;
+  uint32_t index[12], count[12]; const int n = PGStreamTopLoads(index, count, 12);
+  for (int i = 0; i < n && count[i] > 2; i++) {
+    const u64 name = PG_FN_STREAM_OBJECT_NAME(instance, index[i]);
+    char line[200]; snprintf(line, sizeof line, "Streaming [trace]: loaded %u times: %s (index %u).", count[i], name ? pg_string(&env, name) : "?", index[i]);
+    pg_log(line);
+  }
+}
 uint32_t PGCurrentTouchContext(void);
 static void pg_keep_weapon_loaded(w2c_game *instance) {
   static int frames; static uint32_t unarmed;
@@ -2219,7 +2338,7 @@ static void pg_asi_frame(w2c_game *instance) {
         FILE *file = fopen(path, "rb"); if (!file) continue;
         fseek(file, 0, SEEK_END); long size = ftell(file); rewind(file);
         uint8_t *bytes = size > 0 && size < (256l << 20) ? malloc((size_t)size) : 0;
-        if (bytes && fread(bytes, 1, (size_t)size, file) == (size_t)size && pg_asi_load(entry->d_name, places[place], bytes, (uint64_t)size)) loaded++;
+        if (bytes && fread(bytes, 1, (size_t)size, file) == (size_t)size && pg_asi_load(entry->d_name, places[place], bytes, (uint64_t)size)) { loaded++; pg_mod_path_used(path); }
         free(bytes); fclose(file);
       }
       if (dir) closedir(dir);
@@ -2367,6 +2486,9 @@ static void pg_trackify_tick(w2c_game *instance) {
   pg_asi_leave_script(instance, previous);
 }
 #if TARGET_OS_SIMULATOR
+// Harness: the debug channel's "audiodump <path> <seconds>" saves the next seconds of the game's sound (48 kHz,
+// stereo float32, interleaved), so a test can check what played (Self Radio, GTA-5).
+static FILE *pg_audio_dump; static _Atomic int64_t pg_audio_dump_frames;
 #include "NativeDebugChannel.inc"
 #endif
 void pg_asi_script_tick(w2c_game *instance, u64 thread) {
@@ -2398,9 +2520,11 @@ void pg_virtual_pad_apply(w2c_game *instance, uint64_t pad) {
   if (pad == 12840656) pg_apply_cash_request(instance);
   if (pad == 12840656) pg_apply_lite(instance);
   if (pad == 12840656) pg_apply_targeting_mode(instance);
+  if (pad == 12840656) pg_apply_self_radio_mode(instance);
   if (pad == 12840656) pg_tv_presentation_update(instance);
   if (pad == 12840656) pg_keep_on_test_map(instance);
   if (pad == 12840656) pg_keep_weapon_loaded(instance);
+  if (pad == 12840656) pg_trace_stream_loads(instance);
 #if TARGET_OS_SIMULATOR
   if (pad == 12840656) { pg_test_teleport(instance); pg_test_stale_job(instance); pg_test_speed(instance); pg_test_weapon(instance); pg_test_outfit(instance); pg_test_prompts(instance); pg_test_cash(instance); pg_test_tv(instance); pg_test_tv_flood(instance); pg_test_gfx_dirty(instance); pg_test_position(); pg_test_video(instance); pg_test_lester1_tv(instance); pg_test_photo(instance); pg_test_car(instance); pg_test_trailer_monitor(instance); pg_test_request_models(instance); pg_test_loadscene(instance); pg_test_loadscene_monitor(instance); }
 #endif
@@ -2767,6 +2891,12 @@ void PGFillAudio(float *left, float *right, uint32_t count) {
   }
   atomic_store(header + 1, read + take);
   atomic_fetch_add(header + 3, 1);
+#if TARGET_OS_SIMULATOR
+  if (atomic_load(&pg_audio_dump_frames) > 0 && pg_audio_dump) {
+    for (uint32_t i = 0; i < count; i++) { float frame[2] = {left[i], right[i]}; fwrite(frame, sizeof frame, 1, pg_audio_dump); }
+    if (atomic_fetch_sub(&pg_audio_dump_frames, count) <= count) { fclose(pg_audio_dump); pg_audio_dump = NULL; pg_log("TEST: audio dump finished."); }
+  }
+#endif
 }
 
 static char *configuredQuality[32];static unsigned configuredQualityCount;

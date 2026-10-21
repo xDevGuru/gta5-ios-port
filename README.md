@@ -104,7 +104,7 @@ A paid Apple developer account or TrollStore gets you the same result without Ge
 
 - **Graphics preset:** with more memory, try one step higher (Balanced, Quality, Ultra). If a preset is too much, the app tells you on the next launch and steps back down, so trying is safe.
 - **Resolution:** set it separately in Settings while you play. It's the main lever for sharpness vs. frame rate.
-- **Frame rate:** Settings › Frame rate: **30** is steadiest and coolest, **60** is smoother, **Unlocked** goes up to 120 on ProMotion iPhones (13 Pro and newer Pro models). Applies at the next launch.
+- **Frame rate:** Settings › Frame rate: **30** is steadiest and coolest, **60** is smoother, **Unlocked** goes up to 120 on ProMotion iPhones (13 Pro and newer Pro models), and **40** on those is smoother than Unlocked when the game runs between 40 and 60. Changes apply right away.
 - **Keep it cool:** iPhones slow down when hot. Play without a case or near airflow, and avoid charging while playing if it gets warm.
 - **Close other apps** before playing and keep **Low Power Mode off**.
 - **Game files on the iPhone:** keep the game folder in *On My iPhone*, not iCloud Drive (iCloud can offload files and cause loading stutters).
@@ -112,6 +112,10 @@ A paid Apple developer account or TrollStore gets you the same result without Ge
 ## What's new
 
 See [CHANGELOG.md](CHANGELOG.md) for every version.
+
+## Self Radio (your own music)
+
+Since v1.4.5 your own songs play on the car radio, as on PC. Add them in **Settings › Self Radio › Add songs…**, or copy them into **On My iPhone › GTA V Port › Self Radio** (subfolders work too). MP3, M4A/AAC, ALAC, WAV, AIFF and FLAC play; songs from Apple Music or Spotify are protected and can't be added. With 3 songs or more, Self Radio is the smiley next to Los Santos Rock Radio in the radio wheel (the game calls it User Music FM). **Play order** is Shuffle by default; Shuffle and In order start each song from the beginning, and the **Next song** button next to Radio skips one. Like a radio station joins songs midway, as the PC does. Songs added while you play reach the station at the next start.
 
 ## Mods
 
@@ -127,7 +131,7 @@ Since v1.4.4 the app sends a few anonymous numbers so we can see what to fix fir
 
 ## Translate the app
 
-Anyone can add a language to the app or finish one with the Translate page on the builder website. Vietnamese and Arabic are the first community translations. See [docs/TRANSLATING.md](docs/TRANSLATING.md).
+Anyone can add a language to the app or finish one with the Translate page on the builder website. Vietnamese, Arabic and Uzbek are community translations. See [docs/TRANSLATING.md](docs/TRANSLATING.md).
 
 ## Community and help
 
@@ -227,5 +231,5 @@ This port is better because of people outside the project:
 - **Players who opened issues** that shaped v1.4: [@k49kg9xmsd-prog](https://github.com/k49kg9xmsd-prog) (aim and duck while driving, [#15](https://github.com/kevinerikjs/gta5-ios-port/issues/15)), [@abtastic-hub](https://github.com/abtastic-hub) (five bugs from the barber to Set money, [#19](https://github.com/kevinerikjs/gta5-ios-port/issues/19)), [@mmts7hrnb5-jpg](https://github.com/mmts7hrnb5-jpg) (the photo crash, [#16](https://github.com/kevinerikjs/gta5-ios-port/issues/16)), [@Blue7366](https://github.com/Blue7366) (mods, [#3](https://github.com/kevinerikjs/gta5-ios-port/issues/3)) and [@sonubhutani1979-afk](https://github.com/sonubhutani1979-afk) (the builder sign-in, [#18](https://github.com/kevinerikjs/gta5-ios-port/issues/18)).
 - **Players who opened issues** that shaped v1.4.2: [@abtastic-hub](https://github.com/abtastic-hub) (the Handler in Scouting the Port, calls while walking, switching back from Chop, aiming while driving and more, [#20](https://github.com/kevinerikjs/gta5-ios-port/issues/20)).
 - **Players who opened issues** that shaped v1.4.3: [@abtastic-hub](https://github.com/abtastic-hub) (the trailer, the Handler, switching back from Chop and the engine sounds, [#20](https://github.com/kevinerikjs/gta5-ios-port/issues/20)).
-- **Translators**: @lekhoi2811 (Vietnamese) and @uk9_v (Arabic), the first community translations from the Translate page.
+- **Translators**: @lekhoi2811 (Vietnamese), @uk9_v (Arabic) and @muhammadiminov_007 (Uzbek), from the Translate page.
 - **Everyone who sent logs** from Settings › Send log to the developer, especially those who described exactly what failed and added their own analysis. Those reports found the Story mode bugs fixed in v1.3.3: the crash at the end of Marriage Counseling, the lock-ups after long sessions, and the lag with stuck buttons.
